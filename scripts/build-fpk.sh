@@ -18,6 +18,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="${ROOT}/dist"
 mkdir -p "${DIST}"
 
+# 前置硬校验：图标必须独立（曾出现面板直接复用 qwenpaw 面板图标，桌面上分不清），
+# 且必须是 256x256。撞车即 exit 1，不允许打包。
+check_icon() {
+  local SRC="$1" NAME="$2"
+  python3 "${ROOT}/scripts/check-icon.py" --src "${SRC}" --name "${NAME}" \
+    --apps-root "$(dirname "${ROOT}")" || exit 1
+}
+
 pack_agent() {
   local SRC="${ROOT}/fnpack"
   local VER
@@ -29,6 +37,7 @@ pack_agent() {
   BUILD="$(mktemp -d)/agent"
   mkdir -p "${BUILD}/app" "${BUILD}/fpk"
 
+  check_icon "${SRC}" "hermes-agent"
   echo "── 组装 ${DISPLAY_VER} ──"
   # app.tgz 内容 = 部署目录（APP_DIR）内容
   cp -a "${SRC}/app/." "${BUILD}/app/"
@@ -88,6 +97,18 @@ pack_panel() {
   local BUILD
   BUILD="$(mktemp -d)/panel"
   mkdir -p "${BUILD}/app" "${BUILD}/fpk"
+
+  check_icon "${SRC}" "hermes-panel"
+  # 版本号三处必须一致：VERSION（构建用）、manifest（应用中心认）、
+  # fnshell.py 的 VERSION（壳自报版本）。不一致会导致自更新比对错位。
+  local MAN_VER FS_VER
+  MAN_VER="$(grep -E '^version' "${SRC}/manifest" | head -1 | sed 's/.*=\s*//' | tr -d '[:space:]')"
+  FS_VER="$(grep -oE '^VERSION = "[^"]+"' "${SRC}/app/fnshell.py" | head -1 | sed 's/.*"\(.*\)"/\1/')"
+  if [ "${MAN_VER}" != "${VER}" ] || [ "${FS_VER}" != "${VER}" ]; then
+    echo "✗ 面板版本不一致：VERSION=${VER} / manifest=${MAN_VER} / fnshell.py=${FS_VER}" >&2
+    exit 1
+  fi
+  echo "✓ 版本一致：${VER}（VERSION / manifest / fnshell.py）"
 
   echo "── 组装面板 ${VER} ──"
   cp -a "${SRC}/app/." "${BUILD}/app/"
