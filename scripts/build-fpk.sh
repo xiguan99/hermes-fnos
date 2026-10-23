@@ -37,6 +37,16 @@ pack_agent() {
   [ -f "${SRC}/bin/uv" ] && cp "${SRC}/bin/uv" "${BUILD}/app/bin/uv"
   echo "${DISPLAY_VER}" > "${BUILD}/app/VERSION"
 
+  # install-stamp.json：hermes 的版本/来源真相（hermes_cli/version_info.py → pm/paths.py
+  # install_stamp_path() = <hermes-src 根>/install-stamp.json）。缺它时 dashboard 的
+  # /api/health 会返回 version:"unknown"，桌面端与「关于」页也读不到版本。
+  python3 "${SRC}/app/hermes-src/scripts/write_install_stamp.py" \
+    --output "${BUILD}/app/hermes-src/install-stamp.json" \
+    --commit "$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo fnos-build)" \
+    --branch "${STAMP_BRANCH:-fnos}" \
+    --base-version "${DISPLAY_VER}" --display-version "${DISPLAY_VER}" --distance 0 \
+    --source build --distribution desktop-app --update-mechanism app-installer
+
   # 前置校验
   for f in server/monitor.js desktop-app/index.html hermes-src/hermes_cli/web_dist/index.html venv-bundle.tar.gz; do
     [ -e "${BUILD}/app/$f" ] || { echo "✗ 缺少 app/$f" >&2; exit 1; }
