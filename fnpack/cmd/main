@@ -51,7 +51,7 @@ start_process() {
     # 可用同名环境变量覆盖（测试实例用 2282）
     export UI_PORT="${UI_PORT:-2280}"
     log_msg "UI_PORT=${UI_PORT} (direct, BASE_PATH=${BASE_PATH:-/app/hermes-agent} kept for gateway compat)"
-    HOME="${DATA_DIR}" HERMES_HOME="${DATA_DIR}" APP_DIR="${TRIM_APPDEST}" DATA_DIR="${DATA_DIR}" VAR_DIR="${VAR_DIR}" MONITOR_SOCKET_PATH="${SOCKET_PATH}" BASE_PATH="${BASE_PATH:-/app/hermes-agent}" UI_PORT="${UI_PORT}" PATH="${DATA_DIR}/venv/bin:/var/apps/nodejs_v24/target/bin:/var/apps/nodejs_v22/target/bin:/var/apps/nodejs_v20/target/bin:/var/apps/nodejs/target/bin:/usr/local/bin:/usr/bin:/bin" node "${MONITOR_SCRIPT}" >> ${LOG_FILE} 2>&1 &
+    HOME="${DATA_DIR}" HERMES_HOME="${DATA_DIR}" APP_DIR="${TRIM_APPDEST}" DATA_DIR="${DATA_DIR}" VAR_DIR="${VAR_DIR}" MONITOR_SOCKET_PATH="${SOCKET_PATH}" BASE_PATH="${BASE_PATH:-/app/hermes-agent}" UI_PORT="${UI_PORT}" PATH="${DATA_DIR}/venv/bin:/var/apps/nodejs_v24/target/bin:/var/apps/nodejs_v22/target/bin:/var/apps/nodejs_v20/target/bin:/var/apps/nodejs/target/bin:/usr/local/bin:/usr/bin:/bin" setsid node "${MONITOR_SCRIPT}" >> ${LOG_FILE} 2>&1 < /dev/null &
     printf "%s" "$!" > ${PID_FILE}
 
     # 等待 socket 创建（最多 5 秒）

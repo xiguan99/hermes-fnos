@@ -533,6 +533,35 @@
   // 显式定义 renderer 高频访问的嵌套对象(含 updates 复数键,renderer 用
   // hermesDesktop.updates.onProgress/subscribe/check)
   var nested = {
+    // 待发送草稿日志(Electron 主进程存文件;浏览器版必须真实现,否则 Proxy 兜底
+    // 会让 prepared-submissions.ts 的 "if (native)" 判真 -> native.read() 返回 null
+    // -> JSON.parse(null) -> 抛 Invalid prepared submission journal -> 用户看到
+    // "恢复图片草稿" 报错。这里映射到 localStorage 的同一份 key。
+    preparedSubmissions: {
+      read: function () {
+        try { return Promise.resolve(window.localStorage.getItem("hermes.desktop.preparedSubmissions.v1") || "{}"); }
+        catch (e) { return Promise.resolve("{}"); }
+      },
+      update: function (key, entry) {
+        try {
+          var j = JSON.parse(window.localStorage.getItem("hermes.desktop.preparedSubmissions.v1") || "{}");
+          if (entry === null || entry === undefined) delete j[key]; else j[key] = JSON.parse(entry);
+          window.localStorage.setItem("hermes.desktop.preparedSubmissions.v1", JSON.stringify(j));
+        } catch (e) { /* 存储满/坏数据:静默,和 Electron 侧 write 失败同语义 */ }
+        return Promise.resolve();
+      },
+      compareAndSet: function (key, expected, entry) {
+        try {
+          var j = JSON.parse(window.localStorage.getItem("hermes.desktop.preparedSubmissions.v1") || "{}");
+          var current = j[key] === undefined ? null : JSON.stringify(j[key]);
+          var want = expected === null || expected === undefined ? null : expected;
+          if (current !== want) return Promise.resolve({ applied: false, current: current });
+          if (entry === null || entry === undefined) delete j[key]; else j[key] = JSON.parse(entry);
+          window.localStorage.setItem("hermes.desktop.preparedSubmissions.v1", JSON.stringify(j));
+          return Promise.resolve({ applied: true, current: entry === null || entry === undefined ? null : entry });
+        } catch (e) { return Promise.resolve({ applied: false, current: null }); }
+      }
+    },
     fs: { readDir: function () { return Promise.resolve([]); }, readFileText: function (id) { return _readFile(_findPicked(id), false); }, writeTextFile: function () { return Promise.resolve(); } },
     git: { listBranches: function () { return Promise.resolve([]); } },
     terminal: { list: function () { return Promise.resolve([]); } },
