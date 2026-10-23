@@ -494,6 +494,10 @@ def delete_snapshot(name: str) -> dict:
 
 # ── 版本与更新 ──────────────────────────────────────────────────────
 def panel_version() -> str:
+    """面板当前版本：自更新切换后以 VAR 记录为准（应用目录里的 VERSION 只有装包时才变）。"""
+    switched = read_text(VAR_DIR / "panel-version-current").strip()
+    if switched:
+        return switched
     return read_text(PANEL_VERSION_FILE).strip() or "0.0.0"
 
 
@@ -679,6 +683,10 @@ def apply_panel_update(target_version: str = "") -> dict:
                 os.replace(DIST_DIR, backup)
             os.replace(root, DIST_DIR)
             write_json(VAR_DIR / "panel-version.json", {"version": version, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "backup": backup.name})
+            try:
+                (VAR_DIR / "panel-version-current").write_text(version, encoding="utf-8")
+            except Exception:
+                pass
             thread_state["status"] = "done"
             save_state()
             log(f"面板已更新到 {version}（备份 {backup.name}）")
@@ -706,6 +714,12 @@ def rollback_panel() -> dict:
     if DIST_DIR.exists():
         os.replace(DIST_DIR, current)
     os.replace(backup, DIST_DIR)
+    restored = backup.name.replace("panel_dist.bak-", "").replace("panel_dist.bak", "")
+    try:
+        if restored:
+            (VAR_DIR / "panel-version-current").write_text(restored, encoding="utf-8")
+    except Exception:
+        pass
     log(f"面板已回滚到 {backup.name}")
     return {"ok": True, "rolled_back_from": backup.name}
 
