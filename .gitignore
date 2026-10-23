@@ -1,0 +1,27 @@
+# 构建产物与依赖（不进仓库，分发走 Releases）
+dist/
+build/
+*.fpk
+*.tar.gz
+
+# desktop 上游源码（由 scripts/build-desktop-web.sh 使用）
+desktop-src/node_modules/
+desktop-src/apps/desktop/dist/
+desktop-src/.npm/
+
+# 打包时从外部拷入的运行时
+fnpack/venv-bundle.tar.gz
+fnpack/bin/
+
+# 应用部署产物的可复现部分（由上游源码 / 构建脚本产出）
+fnpack/app/desktop-app/
+fnpack/app/VERSION.bak-*
+
+# 临时与备份
+*.bak-*
+*.part
+.DS_Store
+node_modules/
+__pycache__/
+*.pyc
+test-instance/

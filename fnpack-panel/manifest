@@ -1,0 +1,16 @@
+appname               = hermes-panel
+version               = 1.0.0
+display_name          = Hermes Panel
+icon                  = ICON.PNG
+desc                  = Hermes Agent 管理面板（独立应用）：运行状态、服务控制、版本管理、日志、配置、快照、授权与访问、面板自更新。<br/>需搭配 Hermes Agent 本体使用（本体端口 2280）。桌面图标直达 http://&lt;NAS&gt;:2281/。<br/>面板走独立 1.x 版本线，可在面板内一键检查并安装更新。
+platform              = x86
+source                = thirdparty
+maintainer            = xiguan99
+maintainer_url        = https://github.com/xiguan99/hermes-fnos
+distributor           = xiguan99
+distributor_url       = https://github.com/xiguan99/hermes-fnos
+install_dep_apps      = python312
+service_port          = 2281
+checkport             = true
+desktop_uidir         = ui
+desktop_applaunchname = hermes-panel.Application

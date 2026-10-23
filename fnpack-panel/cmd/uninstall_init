@@ -1,0 +1,3 @@
+#!/bin/bash
+pkill -9 -f "fnshell.py --backend 127.0.0.1:2277" 2>/dev/null || true
+exit 0

@@ -1,0 +1,88 @@
+#!/bin/bash
+# hermes-panel 生命周期入口：单进程 python 面板服务（静态面板 + 本体状态探活 + 自更新）
+LOG_FILE="${TRIM_PKGVAR}/panel.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+APP_DIR="${TRIM_APPDEST}"
+STATE_DIR="${TRIM_PKGVAR}"
+
+PY_RUNTIME="/var/apps/python312/target/bin/python3"
+[ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
+
+PANEL_PORT="${PANEL_PORT:-2281}"                    # 面板对外端口（desktop 图标直达）
+HERMES_URL="${HERMES_URL:-http://127.0.0.1:2280}"   # 本体入口（只走 127.0.0.1 的 API）
+
+log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
+log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
+check_process() { ps -p "$1" >/dev/null 2>&1; }
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then return 0; else rm -f "${PID_FILE}"; fi
+    fi
+    return 1
+}
+
+start_process() {
+    status && { log_msg "已在运行，跳过"; return 0; }
+    [ -x "${PY_RUNTIME}" ] || { log_err "python312 套件未找到"; return 1; }
+    [ -f "${APP_DIR}/panel_server.py" ] || { log_err "找不到 ${APP_DIR}/panel_server.py"; return 1; }
+    [ -f "${APP_DIR}/panel_dist/index.html" ] || { log_err "找不到 ${APP_DIR}/panel_dist/index.html"; return 1; }
+    mkdir -p "${STATE_DIR}" 2>/dev/null || true
+    log_msg "启动面板 (port ${PANEL_PORT}, 本体 ${HERMES_URL}, 状态目录 ${STATE_DIR})"
+    # panel_server.py 走环境变量配置（无命令行参数）；PID 由面板自己写 ${STATE_DIR}/panel.pid
+    as_run_user "TRIM_APPDEST='${APP_DIR}' TRIM_PKGVAR='${STATE_DIR}' TRIM_SERVICE_PORT='${PANEL_PORT}' PANEL_PORT='${PANEL_PORT}' PANEL_HOST='0.0.0.0' HERMES_URL='${HERMES_URL}' HERMES_PANEL_REPO='${HERMES_PANEL_REPO:-xiguan99/hermes-fnos}' exec '${PY_RUNTIME}' '${APP_DIR}/panel_server.py' >> '${LOG_FILE}' 2>&1 & echo \$!" >/dev/null 2>&1
+    real=""
+    for i in $(seq 1 20); do
+        sleep 0.5
+        if [ -f "${STATE_DIR}/panel.pid" ]; then
+            cand=$(head -n 1 "${STATE_DIR}/panel.pid" | tr -d '[:space:]')
+            check_process "${cand}" && { real="${cand}"; break; }
+        fi
+    done
+    if [ -n "${real}" ]; then
+        printf "%s" "${real}" > "${PID_FILE}"
+        log_msg "面板启动成功 PID=${real}"
+        return 0
+    fi
+    log_err "面板启动失败（见 ${LOG_FILE}）"
+    return 1
+}
+
+stop_process() {
+    log_msg "停止面板"
+    pid=""
+    if [ -f "${STATE_DIR}/panel.pid" ]; then
+        pid=$(head -n 1 "${STATE_DIR}/panel.pid" | tr -d '[:space:]')
+    elif [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+    fi
+    if [ -n "${pid}" ] && check_process "${pid}"; then
+        kill -TERM "${pid}" 2>/dev/null
+        count=0
+        while check_process "${pid}" && [ $count -lt 5 ]; do sleep 1; count=$((count+1)); done
+        check_process "${pid}" && { log_err "5 秒未退出，SIGKILL"; kill -KILL "${pid}" 2>/dev/null || true; }
+    fi
+    rm -f "${PID_FILE}" "${STATE_DIR}/panel.pid"
+    log_msg "已停止"
+    return 0
+}
+
+RUN_USER="${wizard_run_user:-root}"
+as_run_user() {
+    if [ "${RUN_USER}" != "root" ] && id "${RUN_USER}" >/dev/null 2>&1; then
+        su -s /bin/bash "${RUN_USER}" -c "$1"
+    else
+        bash -c "$1"
+    fi
+}
+
+case $1 in
+start)            start_process ;;
+stop)             stop_process ;;
+status)           status && exit 0 || exit 3 ;;
+start-backend)    start_process ;;
+stop-backend)     stop_process ;;
+restart-backend)  stop_process; start_process ;;
+*)                exit 1 ;;
+esac

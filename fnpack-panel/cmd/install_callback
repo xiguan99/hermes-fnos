@@ -1,0 +1,7 @@
+#!/bin/bash
+# 面板包安装后回调：建目录 → 起 fnshell（无 venv,直接起）
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+touch "${LOG_FILE}" 2>/dev/null || true
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+bash "$(dirname "$0")/main" start 2>/dev/null || true
+exit 0

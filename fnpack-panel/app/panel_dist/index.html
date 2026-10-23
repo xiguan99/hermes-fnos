@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Hermes 面板</title>
+<link rel="stylesheet" href="assets/style.css?v=1.0.1">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">H</div>
+      <div class="brand-text"><b>Hermes</b><span>管理面板</span></div>
+    </div>
+    <nav id="nav"></nav>
+    <div class="sidebar-foot">
+      <span id="panel-ver">v–</span>
+      <span class="dot" id="alive-dot" title="本体状态"></span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="page-title">总览</h1>
+      <div class="top-actions">
+        <span class="pill" id="ip-pill">–</span>
+        <button class="btn ghost sm" id="btn-refresh">刷新</button>
+        <button class="btn ghost sm" id="btn-logout" hidden>退出</button>
+      </div>
+    </header>
+    <div class="view" id="view"></div>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<div class="login-mask" id="login-mask" hidden>
+  <form class="login-card" id="login-form">
+    <h2>需要登录</h2>
+    <p class="muted">面板已设置访问密码</p>
+    <input type="password" id="login-pass" placeholder="访问密码" autocomplete="current-password">
+    <button class="btn primary" type="submit">进入面板</button>
+    <div class="err" id="login-err"></div>
+  </form>
+</div>
+
+<script src="assets/app.js?v=1.0.2"></script>
+</body>
+</html>

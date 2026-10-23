@@ -1,0 +1,18 @@
+{
+    "data-share": {
+        "shares": [
+            {
+                "name": "qwenpaw-panel",
+                "permission": {
+                    "rw": [
+                        "qwenpaw-panel"
+                    ]
+                }
+            }
+        ]
+    },
+    "api-scope": [
+        "trim.file.sharedAccess",
+        "trim.file.userAccess"
+    ]
+}

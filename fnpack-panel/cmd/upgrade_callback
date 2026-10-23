@@ -1,0 +1,6 @@
+#!/bin/bash
+# 升级后：venv 与数据均在 PKGVAR 保留；重启服务（wheel 换代由 pip 在下次 start 自动装）
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+bash "$(dirname "$0")/main" stop 2>/dev/null || true
+bash "$(dirname "$0")/main" start 2>/dev/null || true
+exit 0

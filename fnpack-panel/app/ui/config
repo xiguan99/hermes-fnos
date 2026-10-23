@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "hermes-panel.Application": {
+            "title": "Hermes Panel",
+            "icon": "images/{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "2281",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}
