@@ -40,8 +40,19 @@ const state = {
 };
 
 /* ── 基础 ─────────────────────────────────────── */
+/* 网关前缀兼容：从当前页面路径推出相对 base。
+   直连 2281 → "/"；飞牛网关 → "/app/hermes-panel/"。
+   所有接口都用相对路径，绝不写死根绝对路径（否则前缀下全 404）。 */
+function apiBase() {
+  let p = location.pathname || '/';
+  if (!p.endsWith('/')) p = p.replace(/\/[^\/]*$/, '/');
+  return p;
+}
+function apiUrl(path) {
+  return apiBase() + String(path).replace(/^\/+/, '');
+}
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: opts.method || (opts.body ? 'POST' : 'GET'),
     headers: opts.body ? { 'Content-Type': 'application/json' } : {},
     body: opts.body ? JSON.stringify(opts.body) : undefined,

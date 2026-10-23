@@ -36,8 +36,12 @@ APP_DIR = Path(os.environ.get("TRIM_APPDEST") or Path(__file__).resolve().parent
 VAR_DIR = Path(os.environ.get("TRIM_PKGVAR") or "/var/apps/hermes-panel/var")
 DIST_DIR = APP_DIR / "panel_dist"
 PANEL_VERSION_FILE = APP_DIR / "VERSION"
-PANEL_PORT = int(os.environ.get("PANEL_PORT") or os.environ.get("TRIM_SERVICE_PORT") or "2281")
-PANEL_HOST = os.environ.get("PANEL_HOST") or "0.0.0.0"
+# 内部端口：面板只监听本机，对外由 fnshell.py 的网关 socket 与直连端口负责。
+# 不读 TRIM_SERVICE_PORT（那是壳的对外端口），避免两个进程抢同一个号。
+PANEL_PORT = int(os.environ.get("PANEL_INNER_PORT") or "12281")
+PANEL_HOST = os.environ.get("PANEL_HOST") or "127.0.0.1"
+# 对外端口：飞牛网关与桌面图标看到的号（壳监听它，面板本身不绑）
+PUBLIC_PORT = int(os.environ.get("TRIM_SERVICE_PORT") or os.environ.get("PANEL_PUBLIC_PORT") or "2281")
 PANEL_PID_FILE = VAR_DIR / "panel.pid"
 PANEL_LOG = VAR_DIR / "panel.log"
 AUTH_FILE = VAR_DIR / "panel-auth.json"
@@ -977,6 +981,16 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- 鉴权 -----------------------------------------------------------
     def client_ip(self) -> str:
+        """真实来源 IP。
+        面板在网关模式下只见到壳（127.0.0.1 或 unix socket 的空地址），
+        必须优先用壳透传的 X-Real-IP / X-Forwarded-For，否则可信网段判定会把
+        外部访问误当成「本机」而跳过访问密码。"""
+        for hdr in ("X-Real-IP", "X-Forwarded-For"):
+            raw = (self.headers.get(hdr) or "").strip()
+            if raw:
+                first = raw.split(",")[0].strip()
+                if first:
+                    return first
         return (self.client_address or ("", 0))[0]
 
     def cookie(self, name: str) -> str:
@@ -1120,7 +1134,7 @@ class Handler(BaseHTTPRequestHandler):
                         "sessions": len(sessions) if isinstance(sessions, list) else 0,
                         "models": len(models) if isinstance(models, list) else 0,
                     },
-                    "panel": {"version": panel_version(), "port": PANEL_PORT, "views": VIEWS},
+                    "panel": {"version": panel_version(), "port": PUBLIC_PORT, "inner_port": PANEL_PORT, "views": VIEWS},
                     "system": system_load(),
                     "ts": int(time.time()),
                 }

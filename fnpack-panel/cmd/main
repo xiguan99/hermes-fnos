@@ -1,19 +1,26 @@
 #!/bin/bash
-# hermes-panel 生命周期入口：单进程 python 面板服务（静态面板 + 本体状态探活 + 自更新）
+# hermes-panel 生命周期入口
+# 进程结构：panel_server.py（内部 127.0.0.1:12281，纯业务）
+#           fnshell.py    （对外：飞牛网关 socket + 直连端口，只做前缀/反代/静态）
+# 桌面图标走飞牛 web（网关 socket），直连端口仅排障用。
 LOG_FILE="${TRIM_PKGVAR}/panel.log"
-PID_FILE="${TRIM_PKGVAR}/app.pid"
+PID_FILE="${TRIM_PKGVAR}/app.pid"          # 壳的 PID
 APP_DIR="${TRIM_APPDEST}"
 STATE_DIR="${TRIM_PKGVAR}"
 
 PY_RUNTIME="/var/apps/python312/target/bin/python3"
 [ -x "${PY_RUNTIME}" ] || PY_RUNTIME="$(command -v python3 || true)"
 
-PANEL_PORT="${PANEL_PORT:-2281}"                    # 面板对外端口（desktop 图标直达）
-HERMES_URL="${HERMES_URL:-http://127.0.0.1:2280}"   # 本体入口（只走 127.0.0.1 的 API）
+PANEL_PORT="${PANEL_PORT:-2281}"                     # 对外端口（直连排障 + manifest service_port）
+INNER_PORT="${PANEL_INNER_PORT:-12281}"              # 内部面板端口（只绑 127.0.0.1）
+GATEWAY_PREFIX="${GATEWAY_PREFIX:-/app/hermes-panel}"
+SOCKET_FILE="${APP_DIR}/hermes-panel.sock"
+HERMES_URL="${HERMES_URL:-http://127.0.0.1:2280}"    # 本体入口（只走 127.0.0.1 的 API）
 
 log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] $1" >> "${LOG_FILE}"; }
 log_err() { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "${LOG_FILE}"; }
 check_process() { ps -p "$1" >/dev/null 2>&1; }
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3<&- 3>&-; return 0; }; return 1; }
 
 status() {
     if [ -f "${PID_FILE}" ]; then
@@ -23,51 +30,6 @@ status() {
     return 1
 }
 
-start_process() {
-    status && { log_msg "已在运行，跳过"; return 0; }
-    [ -x "${PY_RUNTIME}" ] || { log_err "python312 套件未找到"; return 1; }
-    [ -f "${APP_DIR}/panel_server.py" ] || { log_err "找不到 ${APP_DIR}/panel_server.py"; return 1; }
-    [ -f "${APP_DIR}/panel_dist/index.html" ] || { log_err "找不到 ${APP_DIR}/panel_dist/index.html"; return 1; }
-    mkdir -p "${STATE_DIR}" 2>/dev/null || true
-    log_msg "启动面板 (port ${PANEL_PORT}, 本体 ${HERMES_URL}, 状态目录 ${STATE_DIR})"
-    # panel_server.py 走环境变量配置（无命令行参数）；PID 由面板自己写 ${STATE_DIR}/panel.pid
-    as_run_user "TRIM_APPDEST='${APP_DIR}' TRIM_PKGVAR='${STATE_DIR}' TRIM_SERVICE_PORT='${PANEL_PORT}' PANEL_PORT='${PANEL_PORT}' PANEL_HOST='0.0.0.0' HERMES_URL='${HERMES_URL}' HERMES_PANEL_REPO='${HERMES_PANEL_REPO:-xiguan99/hermes-fnos}' exec '${PY_RUNTIME}' '${APP_DIR}/panel_server.py' >> '${LOG_FILE}' 2>&1 & echo \$!" >/dev/null 2>&1
-    real=""
-    for i in $(seq 1 20); do
-        sleep 0.5
-        if [ -f "${STATE_DIR}/panel.pid" ]; then
-            cand=$(head -n 1 "${STATE_DIR}/panel.pid" | tr -d '[:space:]')
-            check_process "${cand}" && { real="${cand}"; break; }
-        fi
-    done
-    if [ -n "${real}" ]; then
-        printf "%s" "${real}" > "${PID_FILE}"
-        log_msg "面板启动成功 PID=${real}"
-        return 0
-    fi
-    log_err "面板启动失败（见 ${LOG_FILE}）"
-    return 1
-}
-
-stop_process() {
-    log_msg "停止面板"
-    pid=""
-    if [ -f "${STATE_DIR}/panel.pid" ]; then
-        pid=$(head -n 1 "${STATE_DIR}/panel.pid" | tr -d '[:space:]')
-    elif [ -f "${PID_FILE}" ]; then
-        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
-    fi
-    if [ -n "${pid}" ] && check_process "${pid}"; then
-        kill -TERM "${pid}" 2>/dev/null
-        count=0
-        while check_process "${pid}" && [ $count -lt 5 ]; do sleep 1; count=$((count+1)); done
-        check_process "${pid}" && { log_err "5 秒未退出，SIGKILL"; kill -KILL "${pid}" 2>/dev/null || true; }
-    fi
-    rm -f "${PID_FILE}" "${STATE_DIR}/panel.pid"
-    log_msg "已停止"
-    return 0
-}
-
 RUN_USER="${wizard_run_user:-root}"
 as_run_user() {
     if [ "${RUN_USER}" != "root" ] && id "${RUN_USER}" >/dev/null 2>&1; then
@@ -75,6 +37,76 @@ as_run_user() {
     else
         bash -c "$1"
     fi
+}
+
+start_panel() {
+    # 内部面板：只绑本机，对外一律经壳
+    as_run_user "TRIM_APPDEST='${APP_DIR}' TRIM_PKGVAR='${STATE_DIR}' TRIM_SERVICE_PORT='${PANEL_PORT}' PANEL_INNER_PORT='${INNER_PORT}' PANEL_HOST='127.0.0.1' HERMES_URL='${HERMES_URL}' HERMES_PANEL_REPO='${HERMES_PANEL_REPO:-xiguan99/hermes-fnos}' exec '${PY_RUNTIME}' '${APP_DIR}/panel_server.py' >> '${LOG_FILE}' 2>&1 & echo \$!" >/dev/null 2>&1
+    for i in $(seq 1 30); do
+        sleep 0.4
+        port_open "${INNER_PORT}" && { log_msg "内部面板就绪 :${INNER_PORT}"; return 0; }
+    done
+    log_err "内部面板未在 12 秒内监听 :${INNER_PORT}（见 ${LOG_FILE}）"
+    return 1
+}
+
+start_shell() {
+    rm -f "${SOCKET_FILE}" 2>/dev/null || true
+    as_run_user "TRIM_APPDEST='${APP_DIR}' TRIM_PKGVAR='${STATE_DIR}' exec '${PY_RUNTIME}' '${APP_DIR}/fnshell.py' --socket '${SOCKET_FILE}' --prefix '${GATEWAY_PREFIX}' --backend '127.0.0.1:${INNER_PORT}' --tcp '${PANEL_PORT}' --tcp-host '0.0.0.0' >> '${LOG_FILE}' 2>&1 & echo \$!" >/dev/null 2>&1
+    real=""
+    for i in $(seq 1 30); do
+        sleep 0.4
+        [ -S "${SOCKET_FILE}" ] && port_open "${PANEL_PORT}" && { real="ok"; break; }
+    done
+    if [ -n "${real}" ]; then
+        log_msg "壳就绪：socket ${SOCKET_FILE} / 直连 :${PANEL_PORT}（前缀 ${GATEWAY_PREFIX}）"
+        return 0
+    fi
+    log_err "壳未能就绪（socket 或端口 ${PANEL_PORT}）"
+    return 1
+}
+
+start_process() {
+    status && { log_msg "已在运行，跳过"; return 0; }
+    [ -x "${PY_RUNTIME}" ] || { log_err "python312 套件未找到"; return 1; }
+    [ -f "${APP_DIR}/panel_server.py" ] || { log_err "找不到 ${APP_DIR}/panel_server.py"; return 1; }
+    [ -f "${APP_DIR}/fnshell.py" ] || { log_err "找不到 ${APP_DIR}/fnshell.py"; return 1; }
+    [ -f "${APP_DIR}/panel_dist/index.html" ] || { log_err "找不到 ${APP_DIR}/panel_dist/index.html"; return 1; }
+    mkdir -p "${STATE_DIR}" 2>/dev/null || true
+    log_msg "启动面板（内部 :${INNER_PORT}，对外 :${PANEL_PORT}，本体 ${HERMES_URL}）"
+
+    start_panel || { stop_process >/dev/null 2>&1; return 1; }
+
+    shell_pid=""
+    shell_pid=$(as_run_user "pgrep -f 'fnshell.py --socket ${SOCKET_FILE}' | head -1" 2>/dev/null | tr -d '[:space:]')
+    if start_shell; then
+        shell_pid=$(as_run_user "pgrep -f 'fnshell.py --socket ${SOCKET_FILE}' | head -1" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "${shell_pid}" ]; then
+            printf "%s" "${shell_pid}" > "${PID_FILE}"
+            log_msg "面板启动成功 壳PID=${shell_pid}"
+            return 0
+        fi
+    fi
+    log_err "面板启动失败（见 ${LOG_FILE}）"
+    stop_process >/dev/null 2>&1
+    return 1
+}
+
+stop_process() {
+    log_msg "停止面板"
+    # 壳
+    pkill -TERM -f "fnshell.py --socket ${SOCKET_FILE}" 2>/dev/null || true
+    # 内部面板（只认本包路径，避免误伤别的 python 服务）
+    pkill -TERM -f "python3.*${APP_DIR}/panel_server.py" 2>/dev/null || true
+    for pid in $(cat "${STATE_DIR}/panel.pid" 2>/dev/null) $(cat "${PID_FILE}" 2>/dev/null); do
+        check_process "${pid}" && kill -TERM "${pid}" 2>/dev/null || true
+    done
+    sleep 1
+    pkill -KILL -f "fnshell.py --socket ${SOCKET_FILE}" 2>/dev/null || true
+    pkill -KILL -f "python3.*${APP_DIR}/panel_server.py" 2>/dev/null || true
+    rm -f "${PID_FILE}" "${STATE_DIR}/panel.pid" "${SOCKET_FILE}" 2>/dev/null || true
+    log_msg "已停止"
+    return 0
 }
 
 case $1 in
