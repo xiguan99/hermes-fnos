@@ -52,12 +52,28 @@ shim = '<script src="./web-shim.js"></script>\n    '
 m = re.search(r'<script type="module"[^>]*src="\./assets/[^"]+"', html)
 if not m:
     raise SystemExit('✗ index.html 里找不到入口 module script')
+
+# 服务端 shell 注入占位：monitor.js 用字符串替换把这一行换成真实配置
+# （BASE_PATH / dashboard session token / profile）。缺了它 shim 会退回 token:""，
+# 前端所有 API 401、首屏直接崩 —— 旧 veenyi 产物靠预埋这行，自建产物必须补上。
+placeholder = ('<script>window.__HERMES_WEB_CONFIG__ = window.__HERMES_WEB_CONFIG__ || '
+               '{ base: "/proxy/dashboard", token: "", profile: null };</script>\n    ')
+if '__HERMES_WEB_CONFIG__' not in html:
+    # 占位必须排在 web-shim 之前，shim 启动时才会读到已注入的配置
+    shim = placeholder + '<script src="./web-shim.js"></script>\n    '
 html = html[:m.start()] + shim + html[m.start():]
 open(p, 'w', encoding='utf-8').write(html)
 print('   ✓ index.html 已注入 web-shim 与移动端补丁')
 PY
 
-# 3) 产物自检
+# 3) 上游 web 产物兼容补丁：normalizeProfileKey 对非字符串入参的容错
+#    上游假定 $activeGatewayProfile 一定是字符串（Electron 由 IPC 保证），
+#    web 打包版在 gateway 激活阶段可能拿到对象 → 首屏 TypeError → 错误页。
+python3 "$(dirname "$0")/patch-desktop-bundle.py" "$OUT" || {
+  echo "✗ desktop web 产物补丁失败" >&2; exit 1
+}
+
+# 4) 产物自检
 for f in index.html web-shim.js assets; do
   [ -e "$OUT/$f" ] || { echo "✗ 产物缺少 $f" >&2; exit 1; }
 done

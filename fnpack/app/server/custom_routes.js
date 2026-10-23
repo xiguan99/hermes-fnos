@@ -1661,7 +1661,9 @@ export async function handleCustomRoute(req) {
   // ── 应用更新（GitHub Releases / Actions） ──
   if (path === "/api/app/update/check") {
     try {
-      if (!GITHUB_REPO) return new Response(JSON.stringify({ ok: false, notConfigured: true, error: "GitHub 更新通道未配置（需要 GITHUB_REPO 环境变量，owner/repo 形式）" }), { status: 409, headers: jsonHeaders() });
+      // 未配置 GITHUB_REPO（fnOS 打包版走应用中心更新）→ 返回 200 的"无更新"状态。
+      // 不要 409：桌面端首屏会调这个接口，4xx 会被前端当成错误、污染首屏状态。
+      if (!GITHUB_REPO) return new Response(JSON.stringify({ ok: true, notConfigured: true, configured: false, updateAvailable: false, update_available: false, current: readAppVersion(), message: "本应用通过飞牛应用中心更新" }), { status: 200, headers: jsonHeaders() });
       const pat = getGitHubPAT();
       const headers = { "Accept": "application/vnd.github+json", "User-Agent": "fnos-hermes-agent" };
       if (pat) headers["Authorization"] = `Bearer ${pat}`;
