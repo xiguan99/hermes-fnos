@@ -30,6 +30,7 @@ const VIEWS = [
 ];
 
 const state = {
+  overview: null,
   view: 'overview',
   me: {},
   hermesUrl: '',
@@ -112,10 +113,20 @@ function buildNav() {
   });
 }
 
+/* 本体入口地址：不能用后端返回的 127.0.0.1（手机/别的电脑点了打不开），
+   统一以浏览器当前访问的主机名为准，端口取后端报告的本体监听端口。 */
+function hermesBase() {
+  const h = (state.overview && state.overview.hermes) || {};
+  const host = location.hostname || '127.0.0.1';
+  const port = h.port || 2280;
+  return `${location.protocol}//${host}:${port}`;
+}
+
 /* ── 总览 ─────────────────────────────────────── */
 async function viewOverview() {
   const d = await api('/api/panel/overview');
   if (!d.ok) return `<div class="card"><h3>读取失败</h3><p class="muted">${esc(d.error || '')}</p></div>`;
+  state.overview = d;
   const h = d.hermes, p = h.process || {}, sys = d.system || {};
   const alive = !!h.alive;
   state.hermesUrl = h.url;
@@ -130,7 +141,7 @@ async function viewOverview() {
       <div>数据目录 <span style="font-size:11.5px">${esc(h.data_dir || '未发现')}</span></div>
     </div>
     <div class="btns">
-      <a class="btn primary" href="${esc(h.url || '')}/desktop-app/" target="_blank" rel="noopener">${icon('external')} 进入 Hermes</a>
+      <a class="btn primary" href="${hermesBase()}/desktop-app/" target="_blank" rel="noopener">${icon('external')} 进入 Hermes</a>
     </div>
   </div>
   <div class="grid">
@@ -158,7 +169,7 @@ async function viewOverview() {
     <div class="card">
       <h3>模型服务商 <span class="sub">providers</span></h3>
       <div class="row"><span>已配置模型</span><b>${esc(h.models)}</b></div>
-      <div class="row"><span>本体入口</span><b style="font-size:11.5px">${esc(h.url || '')}</b></div>
+      <div class="row"><span>本体入口</span><b style="font-size:11.5px">${esc(hermesBase())}/desktop-app/</b></div>
       <div class="row"><span>部署目录</span><b style="font-size:11px;word-break:break-all">${esc(h.appdest || '–')}</b></div>
     </div>
   </div>`;
@@ -167,6 +178,7 @@ async function viewOverview() {
 /* ── 运行控制 ─────────────────────────────────── */
 async function viewService() {
   const d = await api('/api/panel/overview');
+  if (d.ok) state.overview = d;
   const h = d.ok ? d.hermes : { alive: false };
   const p = h.process || {};
   return `
@@ -180,7 +192,7 @@ async function viewService() {
       <button class="btn primary" data-act="start" ${h.alive ? 'disabled' : ''}>启动</button>
       <button class="btn" data-act="restart">重启</button>
       <button class="btn danger" data-act="stop" ${h.alive ? '' : 'disabled'}>停止</button>
-      <a class="btn ghost" href="${esc(h.url || '')}/desktop-app/" target="_blank" rel="noopener">进入 Hermes</a>
+      <a class="btn ghost" href="${hermesBase()}/desktop-app/" target="_blank" rel="noopener">进入 Hermes</a>
     </div>
     <p class="muted" style="margin:12px 0 0">停止会让消息网关与会话中断；日常更新请优先用应用中心，避免面板直接停止服务。</p>
   </div>
@@ -301,8 +313,37 @@ async function viewSnapshots() {
 async function viewAccess() {
   const d = await api('/api/panel/access');
   const st = d.settings || {};
+  let fn = { installed: false, authorized: false, error: '' };
+  try { const r = await api('/api/panel/fnos'); if (r && r.fnos) fn = r.fnos; } catch (e) { /* 老版后端无此接口 */ }
+  const fnCard = `
+    <div class="card">
+      <h3>飞牛 OS 集成</h3>
+      <div class="row"><span>授权状态</span><b>${fn.authorized ? '<span class="badge ok">已授权</span>' : '<span class="badge warn">未授权</span>'}</b></div>
+      <div class="row"><span>设备</span><b>${esc(fn.device || '—')}</b></div>
+      <div class="row"><span>最近授权</span><b>${esc(fn.at || '—')}</b></div>
+      <div class="row"><span>客户端</span><b>${fn.installed ? '包内自带' : '缺失'}</b></div>
+      ${fn.error ? `<div class="row"><span>错误</span><b class="warn">${esc(fn.error)}</b></div>` : ''}
+      <div class="spacer"></div>
+      <div class="btns" style="margin-top:10px">
+        <button class="btn primary sm" data-act="fnos-auth">${fn.authorized ? '重新授权' : '点击授权'}</button>
+        ${fn.authorized ? '<button class="btn sm" data-act="fnos-logout">取消授权</button>' : ''}
+      </div>
+      <div id="fnos-auth-box" hidden style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <p class="muted" style="margin:0 0 8px">1. 打开下面的链接登录飞牛 OS 并确认授权<br>2. 复制页面给出的一次性授权码，粘到下面提交</p>
+        <div class="row"><span>授权链接</span><b><a id="fnos-url" href="#" target="_blank" rel="noopener">点此打开</a></b></div>
+        <label class="field" style="margin-top:8px">一次性授权码
+          <input type="text" id="fnos-code" placeholder="粘贴授权码后点提交">
+        </label>
+        <div class="btns" style="margin-top:10px">
+          <button class="btn primary sm" data-act="fnos-complete">提交授权码</button>
+          <button class="btn sm" data-act="fnos-cancel">取消</button>
+        </div>
+      </div>
+      <p class="muted" style="margin:10px 0 0 0">授权后，面板与 Hermes 可以使用飞牛 OS 的文件、应用中心、监控等能力；凭据只存在本机面板数据目录。</p>
+    </div>`;
   return `
   <div class="grid">
+    ${fnCard}
     <div class="card">
       <h3>访问密码</h3>
       <div class="row"><span>当前状态</span><b>${d.enabled ? '<span class="badge ok">已启用</span>' : '<span class="badge warn">未设置</span>'}</b></div>
@@ -322,7 +363,7 @@ async function viewAccess() {
       <div class="row"><span>来源 IP</span><b>${esc(d.ip || '')}</b></div>
       <div class="row"><span>是否可信网段</span><b>${d.trusted ? '<span class="ok">是</span>' : '否'}</b></div>
       <div class="row"><span>有效会话</span><b>${esc(d.sessions || 0)}</b></div>
-      <div class="row"><span>面板端口</span><b>${esc(a.panel_port || location.port || '—')}</b></div>
+      <div class="row"><span>面板端口</span><b>${esc(d.panel_port || location.port || '—')}</b></div>
     </div>
   </div>`;
 }
@@ -488,6 +529,47 @@ async function handleAct(act, el) {
       disable(true);
       const r = await api('/api/panel/snapshots', { body: { action: 'create' } });
       toast(r.ok ? `快照已创建：${r.name}（${r.size_mb} MB）` : `创建失败：${r.error}`, r.ok ? 'ok' : 'bad');
+      render();
+      break;
+    }
+    case 'fnos-auth': {
+      disable(true);
+      const r = await api('/api/panel/fnos', { body: { action: 'start', host: location.hostname } });
+      disable(false);
+      if (!r.ok) { toast(`授权启动失败：${r.error}`, 'bad'); break; }
+      const box = $('#fnos-auth-box');
+      const link = $('#fnos-url');
+      if (box && link) {
+        box.hidden = false;
+        link.href = r.url;
+        link.textContent = r.url.length > 64 ? `${r.url.slice(0, 64)}…` : r.url;
+        link.title = r.url;
+      }
+      toast('已生成授权链接，点击后登录飞牛 OS 并确认授权', 'ok');
+      break;
+    }
+    case 'fnos-complete': {
+      const code = ($('#fnos-code')?.value || '').trim();
+      if (!code) { toast('请先粘贴一次性授权码', 'bad'); break; }
+      disable(true);
+      const r = await api('/api/panel/fnos', { body: { action: 'complete', code } });
+      disable(false);
+      toast(r.ok ? '飞牛 OS 授权成功' : `授权失败：${r.error}`, r.ok ? 'ok' : 'bad');
+      if (r.ok) render();
+      break;
+    }
+    case 'fnos-cancel': {
+      await api('/api/panel/fnos', { body: { action: 'cancel' } });
+      const box = $('#fnos-auth-box');
+      if (box) box.hidden = true;
+      toast('已取消', 'ok');
+      break;
+    }
+    case 'fnos-logout': {
+      disable(true);
+      const r = await api('/api/panel/fnos', { body: { action: 'logout' } });
+      disable(false);
+      toast(r.ok ? '已取消飞牛 OS 授权' : `取消失败：${r.error}`, r.ok ? 'ok' : 'bad');
       render();
       break;
     }

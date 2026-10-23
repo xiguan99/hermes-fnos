@@ -17,6 +17,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import socket
 import subprocess
@@ -118,14 +119,188 @@ def read_text(path: Path, limit: int = 0) -> str:
         return ""
 
 
-def run(cmd, timeout=25, cwd=None) -> tuple[int, str]:
+def run(cmd, timeout=25, cwd=None, env=None) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired:
         return 124, "timeout"
     except Exception as exc:  # pragma: no cover
         return 1, str(exc)
+
+
+# ── 飞牛 OS 集成（包内自带的 fnos skill / trim-cli） ────────────────────
+# 面板「授权与访问」页用它给用户做一键授权，用户不用再手填 NAS 地址。
+# trim-cli 只能连本机（localhost:5666），授权链接里的 localhost 会替换成
+# 用户浏览器实际访问的主机名，这样手机/别的电脑点开也能授权。
+FNOS_DIR = VAR_DIR / "fnos-skill"
+FNOS_PROFILE = "hermes-panel"
+FNOS_STATE = VAR_DIR / "fnos-auth.json"
+FNOS_LOGIN_PROC = None  # 正在等待一次性 code 的 login 子进程
+
+
+def fnos_cli() -> Path:
+    return FNOS_DIR / "fnos" / "bin" / "trim-cli-linux-x64"
+
+
+def fnos_env() -> dict:
+    env = dict(os.environ)
+    # 面板自己的 profile 与 session 独立存放，绝不碰用户在系统里手工登录的那份
+    env["TRIM_CLI_SESSION_STORAGE"] = "file"
+    env["XDG_CONFIG_HOME"] = str(FNOS_DIR / "config")
+    return env
+
+
+def fnos_ensure() -> tuple[bool, str]:
+    cli = fnos_cli()
+    if cli.exists():
+        return True, ""
+    tar = APP_DIR / "fnos-skill.tar.gz"
+    if not tar.exists():
+        return False, "面板包内缺少 fnos-skill.tar.gz"
+    try:
+        FNOS_DIR.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar, "r:gz") as tf:
+            tf.extractall(FNOS_DIR)
+        cli.chmod(0o755)
+    except Exception as exc:
+        return False, f"解压 fnos skill 失败：{exc}"
+    if not cli.exists():
+        return False, "解压后没有找到 trim-cli"
+    return True, ""
+
+
+def fnos_status() -> dict:
+    ok, why = fnos_ensure()
+    saved = read_json(FNOS_STATE, {})
+    out = {
+        "installed": ok,
+        "authorized": False,
+        "profile": FNOS_PROFILE,
+        "device": saved.get("device") or "",
+        "host": saved.get("host") or "",
+        "at": saved.get("at") or "",
+        "pending": bool(FNOS_LOGIN_PROC and FNOS_LOGIN_PROC.poll() is None),
+        "error": why,
+    }
+    if not ok:
+        return out
+    rc, text = run([str(fnos_cli()), "--profile", FNOS_PROFILE, "system", "info"], timeout=15, env=fnos_env())
+    out["authorized"] = rc == 0
+    if rc == 0:
+        try:
+            data = json.loads(text)
+            info = data.get("result") if isinstance(data, dict) else None
+            if isinstance(info, dict):
+                out["device"] = info.get("hostname") or info.get("device_name") or out["device"]
+                out["host"] = info.get("host") or out["host"]
+        except Exception:
+            pass
+    else:
+        tail = (text or "").strip().splitlines()
+        out["probe"] = (tail[-1] if tail else "")[:200]
+    return out
+
+
+def fnos_auth_start(public_host: str = "") -> dict:
+    global FNOS_LOGIN_PROC
+    ok, why = fnos_ensure()
+    if not ok:
+        return {"ok": False, "error": why}
+    if FNOS_LOGIN_PROC and FNOS_LOGIN_PROC.poll() is None:
+        try:
+            FNOS_LOGIN_PROC.kill()
+        except Exception:
+            pass
+    try:
+        proc = subprocess.Popen(
+            [str(fnos_cli()), "--profile", FNOS_PROFILE, "login", "--no-open"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=fnos_env(), text=True, bufsize=1,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"启动 trim-cli 失败：{exc}"}
+    url, lines, deadline = None, [], time.time() + 20
+    while time.time() < deadline:
+        ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+        if ready:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            lines.append(line.strip())
+            found = re.search(r"https?://\S+", line)
+            if found:
+                url = found.group(0)
+                break
+        if proc.poll() is not None:
+            break
+    if not url:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {"ok": False, "error": "拿不到授权链接：" + " ".join([x for x in lines if x])[:300]}
+    if public_host:
+        url = url.replace("//localhost:", f"//{public_host}:").replace("//127.0.0.1:", f"//{public_host}:")
+    FNOS_LOGIN_PROC = proc
+    write_json(FNOS_STATE, {"authorized": False, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "pending": True})
+    return {"ok": True, "url": url, "profile": FNOS_PROFILE,
+            "hint": "在浏览器里打开链接登录并确认授权，复制页面给出的一次性 code，粘到下面的输入框。"}
+
+
+def fnos_auth_complete(code: str) -> dict:
+    global FNOS_LOGIN_PROC
+    proc = FNOS_LOGIN_PROC
+    if not (proc and proc.poll() is None):
+        return {"ok": False, "error": "没有正在等待的授权请求，请先点「点击授权」"}
+    if not code.strip():
+        return {"ok": False, "error": "授权码不能为空"}
+    try:
+        proc.stdin.write(code.strip() + "\n")
+        proc.stdin.flush()
+    except Exception as exc:
+        return {"ok": False, "error": f"提交授权码失败：{exc}"}
+    out, deadline = [], time.time() + 60
+    while time.time() < deadline:
+        ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+        if ready:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            out.append(line.strip())
+        if proc.poll() is not None:
+            break
+    rc = proc.poll()
+    FNOS_LOGIN_PROC = None
+    if rc != 0:
+        return {"ok": False, "error": "授权失败：" + " ".join([x for x in out if x])[-400:]}
+    write_json(FNOS_STATE, {"authorized": True, "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+    st = fnos_status()
+    return {"ok": True, "authorized": True, "status": st}
+
+
+def fnos_auth_cancel() -> dict:
+    global FNOS_LOGIN_PROC
+    if FNOS_LOGIN_PROC and FNOS_LOGIN_PROC.poll() is None:
+        try:
+            FNOS_LOGIN_PROC.kill()
+        except Exception:
+            pass
+    FNOS_LOGIN_PROC = None
+    return {"ok": True}
+
+
+def fnos_logout() -> dict:
+    fnos_auth_cancel()
+    ok, why = fnos_ensure()
+    if not ok:
+        return {"ok": False, "error": why}
+    rc, text = run([str(fnos_cli()), "--profile", FNOS_PROFILE, "logout"], timeout=20, env=fnos_env())
+    try:
+        FNOS_STATE.unlink()
+    except Exception:
+        pass
+    return {"ok": rc == 0, "error": "" if rc == 0 else (text or "")[-300:]}
 
 
 def port_listening(port: int, host: str = "127.0.0.1") -> bool:
@@ -929,7 +1104,12 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "hermes": {
                         "alive": ok_health,
+                        # url 仅供进程内部诊断（永远是本机回环）；
+                        # 前端不要拿它拼跳转地址——手机/别的电脑点了打不开。
+                        # 跳转请用浏览器当前 hostname + app_port。
                         "url": HERMES_URL,
+                        "app_host": "127.0.0.1",
+                        "app_port": HERMES_PORT,
                         "version": hermes_ver or "-",
                         "pid": info.get("pid") or 0,
                         "appdest": info.get("appdest") or "",
@@ -1046,6 +1226,25 @@ class Handler(BaseHTTPRequestHandler):
                 set_password((body.get("password") or "").strip())
                 return self.json({"ok": True, "enabled": bool((body.get("password") or "").strip())})
             return self.err("缺少参数")
+
+        # 飞牛 OS 授权（包内自带 trim-cli，一键授权，用户不用手填 NAS 地址）
+        if path == "/api/panel/fnos":
+            if method == "GET":
+                return self.json({"ok": True, "fnos": fnos_status()})
+            body = self.body_json()
+            action = (body.get("action") or "").strip()
+            if action == "start":
+                host = (body.get("host") or "").strip()
+                if not host:
+                    host = (self.headers.get("Host") or "").split(":")[0]
+                return self.json(fnos_auth_start(host))
+            if action == "complete":
+                return self.json(fnos_auth_complete(body.get("code") or ""))
+            if action == "cancel":
+                return self.json(fnos_auth_cancel())
+            if action == "logout":
+                return self.json(fnos_logout())
+            return self.err("action 必须是 start/complete/cancel/logout")
 
         # 设置
         if path == "/api/panel/settings":

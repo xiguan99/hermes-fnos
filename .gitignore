@@ -3,6 +3,8 @@ dist/
 build/
 *.fpk
 *.tar.gz
+# 面板运行时资源：包内自带 fnos skill（trim-cli），3 MB，随源码走
+!fnpack-panel/app/fnos-skill.tar.gz
 
 # desktop 上游源码（由 scripts/build-desktop-web.sh 使用）
 desktop-src/node_modules/
