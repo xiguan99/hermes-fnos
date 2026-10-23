@@ -30,11 +30,24 @@ setup() {
   cp -a "$TREE/fnpack/app/hermes-src" "$APP/hermes-src"
   mkdir -p "$APP/config/prompts"
   cp -a "$TREE/fnpack/config/prompts/." "$APP/config/prompts/"
-  echo "0.22.2.2-test" > "$APP/VERSION"
+  # 版本号跟随维护树，别再写死（否则面板显示的本体版本与包不一致）
+  tr -d "[:space:]" < "$TREE/fnpack/app/VERSION" > "$APP/VERSION"
 
   echo "-- 解压内置 venv --"
   tar xzf "$TREE/fnpack/venv-bundle.tar.gz" -C "$DATA"
   [ -x "$DATA/venv/bin/python3" ] || { echo "✗ venv 解压失败"; exit 1; }
+
+  # 本体版本覆盖：monitor.js 的候选清单里有装机版 manifest 路径，测试实例必须自己钉住
+  # 覆盖文件与 manifest 同一套解析正则（^version\s*=\s*(\S+)），只写纯版本号读不到
+  printf "version = %s\n" "$(tr -d "[:space:]" < "$TREE/fnpack/app/VERSION")" > "$VAR/app_version"
+
+  # install-stamp.json 必须跟着当前版本走（dashboard /api/health 与 web 版 appVersion 都读它）
+  python3 "$APP/hermes-src/scripts/write_install_stamp.py" \
+    --output "$APP/hermes-src/install-stamp.json" \
+    --commit "$(git -C "$TREE" rev-parse HEAD 2>/dev/null || echo test-instance)" \
+    --branch fnos \
+    --base-version "$(cat "$APP/VERSION")" --display-version "$(cat "$APP/VERSION")" --distance 0 \
+    --source build --distribution desktop-app --update-mechanism app-installer >/dev/null 2>&1 || true
 
   # editable 路径重写到测试 APPDEST
   for f in "$DATA"/venv/lib/python*/site-packages/__editable___hermes_agent_*_finder.py; do
