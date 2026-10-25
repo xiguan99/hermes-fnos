@@ -76,6 +76,7 @@ pack_agent() {
   cp "${SRC}/manifest" "${BUILD}/fpk/manifest"
   cp -a "${SRC}/cmd" "${SRC}/config" "${SRC}/wizard" "${BUILD}/fpk/"
   cp "${SRC}/ICON.PNG" "${SRC}/ICON_256.PNG" "${SRC}/LICENSE" "${BUILD}/fpk/"
+  chmod 644 "${BUILD}/fpk/ICON.PNG" "${BUILD}/fpk/ICON_256.PNG"
   sed -i "s/^version.*=.*/version               = ${DISPLAY_VER}/" "${BUILD}/fpk/manifest"
   if grep -q '^checksum' "${BUILD}/fpk/manifest"; then
     sed -i "s/^checksum.*=.*/checksum              = ${MD5}/" "${BUILD}/fpk/manifest"
@@ -123,6 +124,8 @@ pack_panel() {
   cp "${SRC}/manifest" "${BUILD}/fpk/manifest"
   cp -a "${SRC}/cmd" "${SRC}/config" "${SRC}/wizard_install.json" "${SRC}/wizard_uninstall.json" "${BUILD}/fpk/"
   cp "${SRC}/ICON.PNG" "${SRC}/ICON_256.PNG" "${BUILD}/fpk/"
+  # 应用中心按组身份读图标，705 会让它退回默认占位图（harness-panel 踩过）
+  chmod 644 "${BUILD}/fpk/ICON.PNG" "${BUILD}/fpk/ICON_256.PNG"
   if grep -q '^checksum' "${BUILD}/fpk/manifest"; then
     sed -i "s/^checksum.*=.*/checksum              = ${MD5}/" "${BUILD}/fpk/manifest"
   else

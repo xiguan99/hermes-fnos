@@ -221,17 +221,24 @@ async function viewService() {
 async function viewVersions() {
   const d = await api('/api/panel/versions');
   if (!d.ok) return `<div class="card"><h3>读取失败</h3><p class="muted">${esc(d.error || '')}</p></div>`;
-  const off = d.hermes?.official || {};
-  const offTxt = off.ok === false ? `<span class="muted">检查失败：${esc(off.error || '')}</span>`
-    : (off.latest ? `最新 <b>${esc(off.latest)}</b>` : '<span class="muted">未获取到官方版本</span>');
+  const h = d.hermes || {};
+  const up = h.upstream || {};
+  const upVal = !up.ok
+    ? '<span class="muted">检查失败</span>'
+    : (up.latest ? `<b>v${esc(up.latest)}</b>` : '<span class="muted">未获取到</span>');
+  const cmpCls = up.ok ? ((up.level === 'patch' || up.level === 'minor') ? 'warn' : 'ok') : 'muted';
+  const cmpTxt = up.ok ? (up.text || '–') : (up.error || '上游检查失败');
+  const pubDate = up.ok && up.published_at ? String(up.published_at).slice(0, 10) : '';
   return `
   <div class="grid">
     <div class="card">
       <h3>Hermes Agent 本体</h3>
-      <div class="row"><span>已安装</span><b>${esc(d.hermes?.installed || '–')}</b></div>
-      <div class="row"><span>官方</span><b>${offTxt}</b></div>
+      <div class="row"><span>本体（运行中）</span><b>${esc(h.running || '–')}</b></div>
+      <div class="row"><span>官方上游</span>${upVal}</div>
+      <div class="row"><span>包版本</span><b class="muted" style="font-weight:400">${esc(h.packaged || '–')}</b></div>
+      <div class="row"><span>对比</span><b class="${cmpCls}">${esc(cmpTxt)}</b></div>
       <div class="spacer"></div>
-      <p class="muted" style="margin:0">${esc(d.hermes?.note || '')}</p>
+      <p class="muted" style="margin:0">${esc(h.note || '')}${pubDate ? `　上游发布于 ${esc(pubDate)}` : ''}</p>
       <div class="btns" style="margin-top:10px">
         <button class="btn sm" data-act="check-hermes">检查本体版本</button>
       </div>
@@ -530,9 +537,12 @@ async function handleAct(act, el) {
     case 'check-hermes': {
       disable(true);
       const d = await api('/api/panel/versions');
-      const off = d.hermes?.official || {};
-      toast(off.ok === false ? `检查失败：${off.error}` : `本体已安装 ${d.hermes?.installed}，官方 ${off.latest || '未知'}`, 'ok');
+      const h = d.hermes || {};
+      const up = h.upstream || {};
+      if (!up.ok) toast(`上游检查失败：${up.error || '未知错误'}`, 'bad');
+      else toast(`本体运行 ${h.running}，官方上游 v${up.latest}，${up.text || ''}`, (up.level === 'patch' || up.level === 'minor') ? 'warn' : 'ok');
       disable(false);
+      render();
       break;
     }
     case 'log-refresh': render(); break;

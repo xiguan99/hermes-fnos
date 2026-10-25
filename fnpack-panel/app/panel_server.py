@@ -443,6 +443,128 @@ def hermes_api(path: str, **kw):
     return http_json(HERMES_URL + path, **kw)
 
 
+# ── 本体版本：运行中的真实版本 vs 官方上游 ───────────────────────────
+# 三条版本线互不混用（踩过的坑：把打包号当上游版本比，永远显示"已最新"）：
+#   1. 包版本    0.22.2.5 —— 我们 FPK 的第四段 .5 是打包号，只为应用中心升级用
+#   2. 运行版本  0.22.2   —— 取包版本前三段，代表本体真正跑的上游代码
+#   3. 官方上游  0.22.5   —— 查 NousResearch/hermes-agent 的 releases/latest
+UPSTREAM_REPO = os.environ.get("HERMES_UPSTREAM_REPO") or "NousResearch/hermes-agent"
+UPSTREAM_API_BASE = (os.environ.get("HERMES_UPSTREAM_API_BASE") or "https://api.github.com").rstrip("/")
+UPSTREAM_TIMEOUT = 15
+VERSION_RE = re.compile(r"v?(\d+(?:\.\d+){1,3})")
+
+
+def version_parts(ver: str) -> list[int]:
+    m = VERSION_RE.search((ver or "").strip())
+    if not m:
+        return []
+    return [int(x) for x in m.group(1).split(".")]
+
+
+def strip_pack_segment(ver: str) -> str:
+    """包版本 → 上游口径版本：只取前三段（第四段是我们自己的打包号）。"""
+    parts = version_parts(ver)
+    return ".".join(str(x) for x in parts[:3]) if len(parts) >= 3 else (ver or "").strip()
+
+
+def upstream_token() -> str:
+    """查上游用的 GitHub token：环境变量 → DSH secrets.json（cron/服务环境里没有 env）。"""
+    for key in ("GITHUB_TOKEN", "GH_TOKEN", "DSH_SECRET_GITHUB_PAT_PUSH", "DSH_SECRET_GITHUB_TOKEN"):
+        val = os.environ.get(key)
+        if val:
+            return val
+    try:
+        data = json.loads(Path("/vol1/@appdata/deepseek.harness/dsh-data/bot/secrets.json").read_text(encoding="utf-8"))
+        for key in ("GITHUB_PAT_PUSH", "GITHUB_TOKEN"):
+            if data.get(key):
+                return str(data[key])
+    except Exception:
+        pass
+    return ""
+
+
+def hermes_running_version() -> dict:
+    """返回 {packaged, running, source}。packaged 是包装版本，running 去掉打包段。"""
+    info = discover_hermes()
+    packaged, source = "", ""
+    # 1) 首选 hermes --version：只有它知道"真正在跑的那份源码"的版本
+    venv_bin = os.path.join(info.get("data_dir") or "", "venv", "bin", "hermes")
+    for cmd in ([venv_bin] if os.path.exists(venv_bin) else []) + ["hermes"]:
+        try:
+            out = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=8)
+            text = (out.stdout or "") + (out.stderr or "")
+            m = VERSION_RE.search(text)
+            if m:
+                packaged, source = m.group(1), "hermes --version"
+                break
+        except Exception:
+            continue
+    # 2) 回退：install-stamp.json → 应用目录 VERSION
+    if not packaged:
+        stamp = read_json(Path(info.get("appdest") or "") / "hermes-src" / "install-stamp.json", {})
+        packaged = str(stamp.get("baseVersion") or stamp.get("displayVersion") or "")
+        if packaged:
+            source = "install-stamp.json"
+    if not packaged:
+        packaged = read_text(Path(info.get("appdest") or "") / "VERSION").strip()
+        if packaged:
+            source = "VERSION"
+    return {"packaged": packaged or "-", "running": strip_pack_segment(packaged) or "-", "source": source or "-"}
+
+
+def check_upstream_hermes() -> dict:
+    """查官方上游最新 release。失败只返回错误串，不抛异常（面板照常可用）。"""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "hermes-panel"}
+    token = upstream_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"{UPSTREAM_API_BASE}/repos/{UPSTREAM_REPO}/releases/latest"
+    ok, data = http_json(url, timeout=UPSTREAM_TIMEOUT, headers=headers)
+    if not ok or not isinstance(data, dict):
+        msg = data if isinstance(data, str) else "未知错误"
+        low = msg.lower()
+        if "403" in msg and "rate limit" in low:
+            msg = "GitHub API 限流（未认证 60 次/小时已用完）"
+        elif "HTTP 404" in msg:
+            msg = f"仓库 {UPSTREAM_REPO} 没有正式 release"
+        elif "timed out" in low or "timeout" in low:
+            msg = "连接 GitHub 超时"
+        elif "connection refused" in low or "urlopen error" in low or "name or service" in low or "temporary failure" in low:
+            msg = "连不上 GitHub（网络不通）"
+        return {"ok": False, "error": msg[:200], "repo": UPSTREAM_REPO}
+    tag = (data.get("tag_name") or "").strip()
+    latest = tag.lstrip("vV")
+    return {
+        "ok": True,
+        "repo": UPSTREAM_REPO,
+        "tag": tag,
+        "latest": latest,
+        "published_at": data.get("published_at"),
+        "html_url": data.get("html_url"),
+        "name": data.get("name"),
+    }
+
+
+def compare_upstream(running: str, latest: str) -> dict:
+    """按"前三段"比较；第三段变了才算要跟进（上游口径，与打包号无关）。"""
+    r, l = version_parts(running), version_parts(latest)
+    out = {"behind": 0, "level": "none", "text": ""}
+    if len(r) < 3 or len(l) < 3:
+        out["text"] = "版本号无法解析"
+        return out
+    if l[:2] > r[:2]:
+        out["level"] = "minor"
+        out["text"] = f"上游大版本更新（{'.'.join(map(str, r[:2]))} → {'.'.join(map(str, l[:2]))}）"
+        return out
+    if l[2] > r[2]:
+        out["behind"] = l[2] - r[2]
+        out["level"] = "patch"
+        out["text"] = f"落后 {l[2] - r[2]} 个补丁版本"
+        return out
+    out["text"] = "已是最新"
+    return out
+
+
 def hermes_alive() -> bool:
     ok, _ = hermes_api("/api/health", timeout=3)
     return ok
@@ -1152,18 +1274,23 @@ class Handler(BaseHTTPRequestHandler):
         # 版本管理
         if path == "/api/panel/versions":
             info = discover_hermes()
-            data_dir = info.get("data_dir") or ""
             local_ver = read_text(Path(info.get("appdest") or "") / "VERSION").strip() or "-"
-            ok_up, up = hermes_api("/api/hermes/update/check", timeout=15)
-            official = up if ok_up else {"ok": False, "error": up if isinstance(up, str) else "本体未响应"}
+            ver = hermes_running_version()
+            upstream = check_upstream_hermes()
+            if upstream.get("ok"):
+                upstream.update(compare_upstream(ver["running"], upstream.get("latest") or ""))
             return self.json(
                 {
                     "ok": True,
                     "panel": {"version": panel_version(), "repo": GITHUB_REPO, "line": "1.x（可独立升级）"},
                     "hermes": {
-                        "installed": local_ver,
-                        "official": official,
-                        "note": "本体更新走应用中心（Hermes Agent 应用页更新），本面板只做提示不改动",
+                        # 运行版本（前三段）与包版本（第四段是打包号）分开给，前端别混着显示
+                        "running": ver["running"],
+                        "packaged": ver["packaged"],
+                        "version_source": ver["source"],
+                        "installed": local_ver or ver["packaged"],
+                        "upstream": upstream,
+                        "note": "上游更新需重打包，是否跟进由用户定",
                     },
                 }
             )
