@@ -14,6 +14,32 @@ _FORCE_SERVED_PROFILE_HELP = (
     "Start a separate gateway for this profile even when the default multiplexer already serves it "
     "(not recommended: two pollers on one bot token, port conflicts)")
 
+# `stop`/`restart` ask before interrupting live turns, cron jobs or background delegations.
+_INTERRUPT_HELP = (
+    "{verb} without asking even while sessions are live (turns, cron jobs, background delegations): "
+    "they are interrupted. Without it the command names the live work and asks y/N (refuses when "
+    "there is no terminal). --interrupt is the same flag")
+
+
+class _GatewayCommandParser(argparse.ArgumentParser):
+    """Ensure's parser errors share its machine-readable command boundary."""
+
+    def __init__(self, *args, ensure_json=False, **kwargs):
+        self.ensure_json = ensure_json
+        super().__init__(*args, **kwargs)
+
+    def parse_known_args(self, args=None, namespace=None):
+        parsed, unknown = super().parse_known_args(args, namespace)
+        if self.ensure_json and unknown:
+            self.error("unknown arguments")
+        return parsed, unknown
+
+    def error(self, message):
+        if not self.ensure_json:
+            return super().error(message)
+        print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
+        self.exit(2, "gateway ensure: invalid invocation\n")
+
 
 class _GatewayCommandParser(argparse.ArgumentParser):
     """Ensure's parser errors share its machine-readable command boundary."""
@@ -135,12 +161,17 @@ def build_gateway_parser(
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
     _add_system_flag(gateway_stop)
     _flag(gateway_stop, "--all", help="Stop ALL gateway processes across all profiles")
+    _flag(gateway_stop, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="stop"))
 
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    _flag(gateway_restart, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="restart"))
+    _flag(gateway_restart, "--detach", help=(
+        "Without an installed service, start the replacement in the background (as `gateway ensure` "
+        "does) instead of in this terminal; used by apps that run the restart as a short-lived client"))
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

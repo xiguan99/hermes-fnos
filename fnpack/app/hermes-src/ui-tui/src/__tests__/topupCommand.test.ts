@@ -464,4 +464,19 @@ describe('/billing slash command (overlay-driven)', () => {
     getOverlayState().billing!.ctx.openPortal('https://portal/x')
     expect(printed(sys)).toContain('Opening portal: https://portal/x')
   })
+
+  it('ctx.applyKeepGoingOnCredits(on/off) → billing.keep_going_on_credits with just {enabled}', async () => {
+    const { run, calls } = buildCtx({
+      'billing.state': ownerState({ keep_going_on_credits: false }),
+      'billing.keep_going_on_credits': { ok: true }
+    })
+
+    await run('')
+    expect(await getOverlayState().billing!.ctx.applyKeepGoingOnCredits(true)).toBe(true)
+    expect(await getOverlayState().billing!.ctx.applyKeepGoingOnCredits(false)).toBe(true)
+    expect(calls.filter(c => c.method === 'billing.keep_going_on_credits').map(c => c.params)).toEqual([
+      { enabled: true },
+      { enabled: false }
+    ])
+  })
 })
