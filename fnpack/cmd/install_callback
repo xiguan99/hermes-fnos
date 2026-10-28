@@ -383,25 +383,35 @@ else
 fi
 
 if [ "${SKIP_INSTALL}" = "false" ]; then
-    # ── 内置 venv 快速部署(免在线安装,秒级) ──
+    # ── 内置运行时部署（自带 CPython 3.14 + 全量依赖，免联网、秒级）──
+    # 上游 0.22.5 起核心依赖全部标记 python_version >= '3.14'（pyproject 注释：
+    # 「3.11 只是安装桥，运行时必须是 3.14」），系统 3.11/3.12 只装得到 76/255 个包，
+    # 网关起来就 ModuleNotFoundError: No module named 'rich'。
+    # 所以运行时随包发：venv/.base 是 CPython 3.14 独立运行时，venv 预装全量依赖，
+    # 安装时只做绝对路径改写。旧实现只 sed 一处 shebang（且 shebang 指向构建机
+    # /tmp/hv/...），依赖也缺，是「装完用不了」的直接原因。
     if [ -f "${APP_DIR}/venv-bundle.tar.gz" ]; then
-        log_msg ">>> 检测到内置 venv,直接解压部署(免在线安装)..."
+        log_msg ">>> 检测到内置运行时包（自带 CPython 3.14 + 全量依赖），解压部署 ..."
         rm -rf "${VENV_DIR}" 2>/dev/null || true
         mkdir -p "${DATA_DIR}"
         tar xzf "${APP_DIR}/venv-bundle.tar.gz" -C "${DATA_DIR}" 2>>"${LOG_FILE}"
-        if [ -x "${VENV_DIR}/bin/python3" ]; then
-            # 重写 editable 路径指向实际 hermes-src(内置 venv 打包自 249,路径不同)
-            for f in "${VENV_DIR}"/lib/python*/site-packages/__editable___hermes_agent_*_finder.py; do
-                [ -f "$f" ] && sed -i "s|/vol3/@appcenter/hermes-agent/hermes-src|${HERMES_SRC}|g" "$f"
-            done
-            # bin/* 脚本 shebang 重写
-            sed -i "s|/vol3/@apphome/hermes-agent/data/venv|${VENV_DIR}|g" "${VENV_DIR}/bin/hermes" 2>/dev/null || true
-            # chown 归 hermes-agent(内置 venv 打包时属主为 root)
-            chown -R hermes-agent:hermes-agent "${VENV_DIR}" 2>/dev/null || chown -R hermes-agent "${VENV_DIR}" 2>/dev/null || true
-            log_msg ">>> 内置 venv 部署完成,跳过在线安装"
+        RUNTIME_PY="$(ls -d "${VENV_DIR}"/.base/bin/python3.1? 2>/dev/null | grep -v -- '-config$' | tail -1)"
+        if [ -n "${RUNTIME_PY}" ] && [ -x "${RUNTIME_PY}" ] && [ -f "${DATA_DIR}/venv_fixup.py" ]; then
+            log_msg ">>> 内置运行时 $(basename "${RUNTIME_PY}")，改写 venv 绝对路径 ..."
+            if "${RUNTIME_PY}" "${DATA_DIR}/venv_fixup.py" --venv "${VENV_DIR}" --src "${HERMES_SRC}" >>"${LOG_FILE}" 2>&1; then
+                log_msg ">>> 路径改写完成"
+            else
+                log_msg "WARNING: venv_fixup 返回非 0，见 ${LOG_FILE}"
+            fi
+        else
+            log_msg "WARNING: 内置运行时缺失（.base/bin/python3.* 或 venv_fixup.py）"
+        fi
+        chown -R hermes-agent:hermes-agent "${VENV_DIR}" 2>/dev/null || chown -R hermes-agent "${VENV_DIR}" 2>/dev/null || true
+        if [ -x "${VENV_DIR}/bin/hermes" ] && "${VENV_DIR}/bin/python3" -c 'import rich, openai, httpx' >>"${LOG_FILE}" 2>&1; then
+            log_msg ">>> 内置运行时自检通过（rich/openai/httpx 可导入，$("${VENV_DIR}/bin/python3" --version 2>&1)）"
             SKIP_INSTALL=true
         else
-            log_msg "WARNING: 内置 venv 解压异常,回退在线安装..."
+            log_msg "WARNING: 内置运行时自检未通过，回退在线安装（大概率同样失败）..."
         fi
     fi
 fi

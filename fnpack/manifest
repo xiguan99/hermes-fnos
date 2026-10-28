@@ -1,5 +1,5 @@
 appname               = hermes-agent
-version               = 0.22.2-5
+version               = 0.22.5-1
 display_name          = Hermes Agent
 icon                  = ICON.PNG
 desc                  = Hermes Agent 开源 AI Agent（上游 NousResearch）：多平台消息网关、内置学习循环、技能系统与 MCP 扩展。<br/>桌面图标/浏览器端口直达 http://&lt;NAS&gt;:2280/（原生绑定），安装后即开即用。<br/><br/><strong>核心能力：</strong><br/>• 多模型支持：OpenAI、Anthropic、Kimi、MiniMax 等<br/>• 消息平台：微信ClawBot、QQ Bot、飞书、WhatsApp、Telegram 等<br/>• 定时任务：自然语言描述的自动化调度<br/>• 持久记忆：跨会话学习和技能进化<br/>• MCP 扩展：连接 GitHub 等外部工具<br/><br/><strong>配套应用：</strong>Hermes Panel（管理面板，独立安装）提供状态、日志、配置、快照与更新管理。
@@ -9,7 +9,6 @@ maintainer            = Nous Research
 maintainer_url        = https://github.com/NousResearch/hermes-agent
 distributor           = xiguan99
 distributor_url       = https://github.com/xiguan99/hermes-fnos
-install_dep_apps      = nodejs_v24
 service_port          = 2280
 checkport             = true
 desktop_uidir         = ui
