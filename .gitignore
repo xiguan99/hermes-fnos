@@ -28,3 +28,4 @@ __pycache__/
 *.pyc
 test-instance/
 fnpack/app/hermes-src/install-stamp.json
+backups/

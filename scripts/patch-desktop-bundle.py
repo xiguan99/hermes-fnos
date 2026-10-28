@@ -16,6 +16,7 @@ gateway 激活阶段有可能拿到对象（Electron 下由 IPC 给字符串，w
 """
 import glob
 import os
+import re
 import sys
 
 OLD = 'function w(e){return(e??``).trim()||`default`}'
@@ -26,6 +27,23 @@ NEW = (
 
 # 早前调试用的诊断版，重跑时要能覆盖掉
 DIAG_MARK = '"[diag] normalizeProfileKey got"'
+
+
+# 0.22.5 起上游改了压缩产物形态：normalizeProfileKey 不再叫 `w`，同形态代码散在多个 chunk。
+# 这里按"字形"打补丁：凡是 `(IDENT??``).trim()||`default`` 都改成对非字符串入参容错。
+_SHAPE = re.compile(r"\((\w+)\?\?``\)\.trim\(\)\|\|`default`")
+def _safe_sub(m):
+    v = m.group(1)
+    return (f"((typeof {v}===`string`?{v}:({v}&&typeof {v}===`object`"
+            f"?({v}.name??{v}.key??{v}.profile??``):``))??``).trim()||`default`")
+def patch_shapes(root: str) -> int:
+    n = 0
+    for f in glob.glob(os.path.join(root, "assets", "*.js")):
+        s = open(f, encoding="utf-8").read()
+        s2, k = _SHAPE.subn(_safe_sub, s)
+        if k:
+            open(f, "w", encoding="utf-8").write(s2); n += k
+    return n
 
 
 def patch(root: str) -> int:
@@ -65,6 +83,7 @@ def main() -> int:
             print(f"skip (not a dir): {root}")
             continue
         n = patch(root)
+        n += patch_shapes(root)
         total += n
         if n == 0:
             print(f"warning: no profile-*.js matched in {root}")

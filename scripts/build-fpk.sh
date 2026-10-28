@@ -31,8 +31,11 @@ pack_agent() {
   local VER
   # 对外版本号取自 app/VERSION（0.22.2.2 这种 4 段写法）；
   # manifest 里的 0.22.2-2 只是给 fnpack 校验用的等价写法
-  local DISPLAY_VER
+  local DISPLAY_VER UPSTREAM_VER
   DISPLAY_VER="$(tr -d '[:space:]' < "${SRC}/app/VERSION")"
+  # 版本真相分两层：包版本 0.22.5.2（应用中心升级用）vs 上游版本 0.22.5
+  # （hermes --version / 面板「本体（运行中）」显示用）。取前三段即上游版本。
+  UPSTREAM_VER="$(echo "${DISPLAY_VER}" | cut -d. -f1-3)"
   local BUILD
   BUILD="$(mktemp -d)/agent"
   mkdir -p "${BUILD}/app" "${BUILD}/fpk"
@@ -53,7 +56,7 @@ pack_agent() {
     --output "${BUILD}/app/hermes-src/install-stamp.json" \
     --commit "$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null || echo fnos-build)" \
     --branch "${STAMP_BRANCH:-fnos}" \
-    --base-version "${DISPLAY_VER}" --display-version "${DISPLAY_VER}" --distance 0 \
+    --base-version "${UPSTREAM_VER}" --display-version "${UPSTREAM_VER}" --distance 0 \
     --source build --distribution desktop-app --update-mechanism app-installer
 
   # 前置校验
@@ -67,6 +70,15 @@ pack_agent() {
       | grep -vE '\.pyc|app_version|password[:=](password|true|false)|token[:=](token|true|false)' | head -5 || true)"
   [ -z "${LEAKS}" ] || { echo "✗ 隐私扫描命中："; echo "${LEAKS}"; exit 1; }
   echo "✓ 前置校验 + 隐私扫描通过"
+
+  # 包内清洁（故障库第 3 条）：开发期跑 uv sync / 自检会在源树留下 __pycache__/*.pyc，
+  # 不删就会随 app.tgz 进包。删完必须断言归零，不为 0 直接拒绝打包。
+  find "${BUILD}/app" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+  find "${BUILD}/app" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete 2>/dev/null || true
+  local JUNK
+  JUNK="$(find "${BUILD}/app" \( -name '__pycache__' -o -name '*.pyc' -o -name '*.pyo' \) 2>/dev/null | wc -l)"
+  [ "${JUNK}" -eq 0 ] || { echo "✗ 包内仍有 ${JUNK} 个 __pycache__/.pyc，拒绝打包" >&2; exit 1; }
+  echo "✓ 包内无 __pycache__/.pyc（0 个）"
 
   tar czf "${BUILD}/fpk/app.tgz" -C "${BUILD}/app" .
   local MD5
