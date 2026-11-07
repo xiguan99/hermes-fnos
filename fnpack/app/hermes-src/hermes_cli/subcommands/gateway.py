@@ -41,26 +41,6 @@ class _GatewayCommandParser(argparse.ArgumentParser):
         self.exit(2, "gateway ensure: invalid invocation\n")
 
 
-class _GatewayCommandParser(argparse.ArgumentParser):
-    """Ensure's parser errors share its machine-readable command boundary."""
-
-    def __init__(self, *args, ensure_json=False, **kwargs):
-        self.ensure_json = ensure_json
-        super().__init__(*args, **kwargs)
-
-    def parse_known_args(self, args=None, namespace=None):
-        parsed, unknown = super().parse_known_args(args, namespace)
-        if self.ensure_json and unknown:
-            self.error("unknown arguments")
-        return parsed, unknown
-
-    def error(self, message):
-        if not self.ensure_json:
-            return super().error(message)
-        print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
-        self.exit(2, "gateway ensure: invalid invocation\n")
-
-
 def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
