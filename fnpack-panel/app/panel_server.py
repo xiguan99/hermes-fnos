@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import hmac
 import json
@@ -140,19 +141,55 @@ def run(cmd, timeout=25, cwd=None, env=None) -> tuple[int, str]:
 FNOS_DIR = VAR_DIR / "fnos-skill"
 FNOS_PROFILE = "hermes-panel"
 FNOS_STATE = VAR_DIR / "fnos-auth.json"
-FNOS_LOGIN_PROC = None  # 正在等待一次性 code 的 login 子进程
 
 
 def fnos_cli() -> Path:
-    return FNOS_DIR / "fnos" / "bin" / "trim-cli-linux-x64"
+    return FNOS_DIR / "fnos" / "scripts" / "fnos-cli"
 
 
 def fnos_env() -> dict:
     env = dict(os.environ)
     # 面板自己的 profile 与 session 独立存放，绝不碰用户在系统里手工登录的那份
-    env["TRIM_CLI_SESSION_STORAGE"] = "file"
+    env["FNOS_CLI_SESSION_STORAGE"] = "file"
     env["XDG_CONFIG_HOME"] = str(FNOS_DIR / "config")
+    env["XDG_CACHE_HOME"] = str(FNOS_DIR / "cache")
     return env
+
+
+def fnos_pending_file() -> Path:
+    return FNOS_DIR / "config" / "fnos-cli" / "profiles" / f"{FNOS_PROFILE}.oauth-pending.json"
+
+
+def fnos_seed_cache(log) -> None:
+    """把包内自带的 linux-x64 二进制解压到 CLI 缓存目录（启动器 ready() 命中即永不联网下载）。"""
+    root = FNOS_DIR / "fnos"
+    rm_path = root / "runtime-manifest.json"
+    if not rm_path.exists():
+        return
+    try:
+        rm = json.loads(rm_path.read_text())
+        asset = (rm.get("assets") or {}).get("linux-x64")
+        version = rm.get("version") or ""
+        if not asset or not version:
+            return
+        gz_path = root / "bin" / str(asset.get("name") or "")
+        if not gz_path.exists() or gz_path.stat().st_size != int(asset.get("size") or -1):
+            return
+        dest = FNOS_DIR / "cache" / "fnos-cli" / version / "linux-x64" / "fnos-cli"
+        want = int(asset.get("binarySize") or 0)
+        if dest.exists() and dest.stat().st_size == want and os.access(dest, os.X_OK):
+            return
+        data = gzip.decompress(gz_path.read_bytes())
+        if len(data) != want or hashlib.sha256(data).hexdigest() != str(asset.get("binarySha256") or ""):
+            log("预置 fnos-cli 缓存失败：解压校验不匹配")
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.parent / (dest.name + ".seeding")
+        tmp.write_bytes(data)
+        tmp.chmod(0o755)
+        os.replace(tmp, dest)
+    except Exception as exc:
+        log(f"预置 fnos-cli 缓存失败：{exc}")
 
 
 def fnos_ensure() -> tuple[bool, str]:
@@ -166,11 +203,15 @@ def fnos_ensure() -> tuple[bool, str]:
         FNOS_DIR.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tar, "r:gz") as tf:
             tf.extractall(FNOS_DIR)
-        cli.chmod(0o755)
+        for name in ("scripts/fnos-cli", "scripts/fnos-cli.sh"):
+            p = FNOS_DIR / "fnos" / "scripts" / name
+            if p.exists():
+                p.chmod(0o755)
     except Exception as exc:
         return False, f"解压 fnos skill 失败：{exc}"
+    fnos_seed_cache(lambda msg: print(msg, flush=True))
     if not cli.exists():
-        return False, "解压后没有找到 trim-cli"
+        return False, "解压后没有找到 fnos-cli 启动器"
     return True, ""
 
 
@@ -184,7 +225,7 @@ def fnos_status() -> dict:
         "device": saved.get("device") or "",
         "host": saved.get("host") or "",
         "at": saved.get("at") or "",
-        "pending": bool(FNOS_LOGIN_PROC and FNOS_LOGIN_PROC.poll() is None),
+        "pending": fnos_pending_file().exists(),
         "error": why,
     }
     if not ok:
@@ -206,100 +247,87 @@ def fnos_status() -> dict:
     return out
 
 
+def fnos_parse_json(text: str):
+    """在 stdout+stderr 混合文本里取第一个完整 JSON 对象（新版 CLI 输出是多行美化 JSON）。"""
+    text = text or ""
+    start = text.find("{")
+    while start >= 0:
+        depth, in_str, esc = 0, False, False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start:i + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        pass
+                    break
+        start = text.find("{", start + 1)
+    return None
+
+
 def fnos_auth_start(public_host: str = "") -> dict:
-    global FNOS_LOGIN_PROC
     ok, why = fnos_ensure()
     if not ok:
         return {"ok": False, "error": why}
-    if FNOS_LOGIN_PROC and FNOS_LOGIN_PROC.poll() is None:
-        try:
-            FNOS_LOGIN_PROC.kill()
-        except Exception:
-            pass
-    try:
-        proc = subprocess.Popen(
-            [str(fnos_cli()), "--profile", FNOS_PROFILE, "login", "--no-open"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            env=fnos_env(), text=True, bufsize=1,
-        )
-    except Exception as exc:
-        return {"ok": False, "error": f"启动 trim-cli 失败：{exc}"}
-    url, lines, deadline = None, [], time.time() + 20
-    while time.time() < deadline:
-        ready, _, _ = select.select([proc.stdout], [], [], 1.0)
-        if ready:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            lines.append(line.strip())
-            found = re.search(r"https?://\S+", line)
-            if found:
-                url = found.group(0)
-                break
-        if proc.poll() is not None:
-            break
-    if not url:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        return {"ok": False, "error": "拿不到授权链接：" + " ".join([x for x in lines if x])[:300]}
+    rc, text = run([str(fnos_cli()), "--profile", FNOS_PROFILE, "login",
+                    "--authorize-only", "--agent-name", "hermes"], timeout=25, env=fnos_env())
+    data = fnos_parse_json(text)
+    url = (data or {}).get("authorization_url") or ""
+    if rc != 0 or not url:
+        tail = (text or "").strip().replace("\n", " ")[-300:]
+        return {"ok": False, "error": f"拿不到授权链接：{tail}"}
     if public_host:
         url = url.replace("//localhost:", f"//{public_host}:").replace("//127.0.0.1:", f"//{public_host}:")
-    FNOS_LOGIN_PROC = proc
     write_json(FNOS_STATE, {"authorized": False, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "pending": True})
     return {"ok": True, "url": url, "profile": FNOS_PROFILE,
-            "hint": "在浏览器里打开链接登录并确认授权，复制页面给出的一次性 code，粘到下面的输入框。"}
+            "hint": "在浏览器里打开链接登录并确认授权，复制页面给出的一次性 code（5 分钟内有效），粘到下面的输入框。"}
 
 
 def fnos_auth_complete(code: str) -> dict:
-    global FNOS_LOGIN_PROC
-    proc = FNOS_LOGIN_PROC
-    if not (proc and proc.poll() is None):
-        return {"ok": False, "error": "没有正在等待的授权请求，请先点「点击授权」"}
+    ok, why = fnos_ensure()
+    if not ok:
+        return {"ok": False, "error": why}
     if not code.strip():
         return {"ok": False, "error": "授权码不能为空"}
-    try:
-        proc.stdin.write(code.strip() + "\n")
-        proc.stdin.flush()
-    except Exception as exc:
-        return {"ok": False, "error": f"提交授权码失败：{exc}"}
-    out, deadline = [], time.time() + 60
-    while time.time() < deadline:
-        ready, _, _ = select.select([proc.stdout], [], [], 1.0)
-        if ready:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            out.append(line.strip())
-        if proc.poll() is not None:
-            break
-    rc = proc.poll()
-    FNOS_LOGIN_PROC = None
+    rc, text = run([str(fnos_cli()), "--profile", FNOS_PROFILE, "login", "--code", code.strip()],
+                   timeout=40, env=fnos_env())
     if rc != 0:
-        return {"ok": False, "error": "授权失败：" + " ".join([x for x in out if x])[-400:]}
+        tail = (text or "").strip().replace("\n", " ")[-400:]
+        return {"ok": False, "error": f"授权失败：{tail}"}
     write_json(FNOS_STATE, {"authorized": True, "at": time.strftime("%Y-%m-%d %H:%M:%S")})
     st = fnos_status()
     return {"ok": True, "authorized": True, "status": st}
 
 
 def fnos_auth_cancel() -> dict:
-    global FNOS_LOGIN_PROC
-    if FNOS_LOGIN_PROC and FNOS_LOGIN_PROC.poll() is None:
-        try:
-            FNOS_LOGIN_PROC.kill()
-        except Exception:
-            pass
-    FNOS_LOGIN_PROC = None
+    try:
+        fnos_pending_file().unlink()
+    except Exception:
+        pass
     return {"ok": True}
 
 
 def fnos_logout() -> dict:
-    fnos_auth_cancel()
     ok, why = fnos_ensure()
     if not ok:
         return {"ok": False, "error": why}
     rc, text = run([str(fnos_cli()), "--profile", FNOS_PROFILE, "logout"], timeout=20, env=fnos_env())
+    shutil.rmtree(FNOS_DIR / "config" / "fnos-cli" / "profiles", ignore_errors=True)
     try:
         FNOS_STATE.unlink()
     except Exception:
